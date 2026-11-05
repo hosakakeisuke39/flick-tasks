@@ -11,7 +11,12 @@ export default defineConfig({
   use: {
     baseURL: "http://localhost:5173",
     trace: "retain-on-failure",
-    launchOptions: chrome ? { executablePath: chrome } : {},
+    // 偽のマイク（Chrome 内蔵のテスト用音声）で録音を検証する
+    launchOptions: {
+      ...(chrome ? { executablePath: chrome } : {}),
+      args: ["--use-fake-ui-for-media-stream", "--use-fake-device-for-media-stream"],
+    },
+    permissions: ["microphone"],
   },
   projects: [
     { name: "iPhone", use: { ...devices["iPhone 15"], browserName: "chromium", defaultBrowserType: "chromium" } },

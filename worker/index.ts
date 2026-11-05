@@ -17,6 +17,7 @@ type C = Context<{ Bindings: Env; Variables: Vars }>;
 const SESSION_DAYS = 30;
 const STATUSES = ["todo", "doing", "done"] as const;
 const AI_MODEL = "@cf/google/gemma-4-26b-a4b-it";
+const WHISPER_MODEL = "@cf/openai/whisper-large-v3-turbo";
 
 const app = new Hono<{ Bindings: Env; Variables: Vars }>();
 
@@ -195,20 +196,16 @@ app.post("/api/tasks/sync", async (c) => {
 });
 
 // AI: 走り書きのメモを実行可能なタスクに分解
-app.post("/api/ai/split", async (c) => {
-  const body = await c.req.json<{ text: string }>().catch(() => null);
-  const text = body?.text?.trim();
-  if (!text || text.length > 2000) return c.json({ error: "bad request" }, 400);
-
-  if (!c.env.AI) {
+async function splitText(env: Env, text: string): Promise<string[]> {
+  if (!env.AI) {
     // ローカル（AIバインディングなし）時のフォールバック：区切り文字で分割
-    const tasks = text.split(/\n|、|。|,|・|と(?=.{2,})/).map((s) => s.trim()).filter(Boolean).slice(0, 8);
-    return c.json({ tasks, source: "local" });
+    return text.split(/\n|、|。|,|・|と(?=.{2,})/).map((s) => s.trim()).filter(Boolean).slice(0, 8);
   }
 
   const system =
     "あなたはタスク整理アシスタントです。ユーザーのメモを、すぐ着手できる具体的なタスクに分解します。" +
     "各タスクは動詞で終わる日本語の短い文（30文字以内）。最大8件。重複・前置き・説明は禁止。" +
+    "音声の書き起こしの場合は、言い淀みやフィラー（えー、あの等）は無視します。" +
     '出力は JSON のみ: {"tasks": ["...", "..."]}';
   const messages = [
     { role: "system", content: system },
@@ -217,7 +214,7 @@ app.post("/api/ai/split", async (c) => {
 
   let res: unknown;
   try {
-    res = await c.env.AI.run(AI_MODEL as keyof AiModels, {
+    res = await env.AI.run(AI_MODEL as keyof AiModels, {
       messages,
       response_format: {
         type: "json_schema",
@@ -231,19 +228,57 @@ app.post("/api/ai/split", async (c) => {
     } as never);
   } catch {
     // JSON モード非対応時は通常生成で再試行
-    res = await c.env.AI.run(AI_MODEL as keyof AiModels, { messages, max_tokens: 1024 } as never);
+    res = await env.AI.run(AI_MODEL as keyof AiModels, { messages, max_tokens: 1024 } as never);
   }
 
-  let tasks = extractTasks(res);
-  if (!tasks.length) {
-    console.log("ai/split: unparsed response", JSON.stringify(res).slice(0, 2000));
-  }
-  tasks = tasks
+  const tasks = extractTasks(res);
+  if (!tasks.length) console.log("ai/split: unparsed response", JSON.stringify(res).slice(0, 2000));
+  return tasks
     .map((t) => t.replace(/^[-*・\d.)\s]+/, "").trim().slice(0, 200))
     .filter(Boolean)
     .slice(0, 8);
-  return c.json(tasks.length ? { tasks, source: "workers-ai" } : { tasks, source: "workers-ai", shape: describe(res) });
+}
+
+app.post("/api/ai/split", async (c) => {
+  const body = await c.req.json<{ text: string }>().catch(() => null);
+  const text = body?.text?.trim();
+  if (!text || text.length > 2000) return c.json({ error: "bad request" }, 400);
+  const tasks = await splitText(c.env, text);
+  return c.json({ tasks, source: c.env.AI ? "workers-ai" : "local" });
 });
+
+// AI: 録音した音声 → Whisper で書き起こし → タスクに分解
+const MAX_AUDIO = 8 * 1024 * 1024;
+app.post("/api/ai/voice", async (c) => {
+  const type = c.req.header("Content-Type") ?? "";
+  if (!/^(audio|video)\//.test(type)) return c.json({ error: "audio required" }, 415);
+  const buf = await c.req.arrayBuffer();
+  if (buf.byteLength < 200) return c.json({ error: "too short" }, 400);
+  if (buf.byteLength > MAX_AUDIO) return c.json({ error: "too large" }, 413);
+
+  let text: string;
+  if (!c.env.AI) {
+    // ローカル開発・E2E 用の固定書き起こし
+    text = "牛乳を買う、レポートを提出する";
+  } else {
+    const out = (await c.env.AI.run(WHISPER_MODEL as keyof AiModels, {
+      audio: toBase64(buf),
+      language: "ja",
+      vad_filter: true,
+    } as never)) as { text?: string };
+    text = (out?.text ?? "").trim();
+  }
+  if (!text) return c.json({ text: "", tasks: [] });
+  const tasks = await splitText(c.env, text.slice(0, 2000));
+  return c.json({ text, tasks: tasks.length ? tasks : [text.slice(0, 200)] });
+});
+
+function toBase64(buf: ArrayBuffer) {
+  const bytes = new Uint8Array(buf);
+  let bin = "";
+  for (let i = 0; i < bytes.length; i += 0x8000) bin += String.fromCharCode(...bytes.subarray(i, i + 0x8000));
+  return btoa(bin);
+}
 
 // モデルごとに返り値の形が異なる（response が文字列/オブジェクト、OpenAI互換の choices など）ので幅広く読む
 function extractTasks(res: unknown): string[] {
@@ -284,7 +319,7 @@ function fromValue(v: unknown): string[] {
   return lines;
 }
 
-function describe(v: unknown, depth = 0): unknown {
+export function describe(v: unknown, depth = 0): unknown {
   if (depth > 3) return typeof v;
   if (Array.isArray(v)) return [v.length ? describe(v[0], depth + 1) : "empty"];
   if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).slice(0, 12).map(([k, x]) => [k, describe(x, depth + 1)]));

@@ -305,3 +305,17 @@ button { background: none; border: 0; padding: 0; cursor: pointer; }
 @supports not ((backdrop-filter: blur(1px)) or (-webkit-backdrop-filter: blur(1px))) {
   .glass { background: rgba(255, 255, 255, 0.92); }
 }
+
+/* ---------- 音声入力 ---------- */
+.mic-btn { background: var(--ink); color: #fff; box-shadow: 0 6px 18px -6px rgba(15, 18, 34, 0.5); }
+.stop-btn { position: relative; background: linear-gradient(135deg, #ff5a6e, #ef4444); color: #fff; box-shadow: 0 8px 22px -6px rgba(239, 68, 68, 0.65); }
+.stop-ring { position: absolute; inset: -5px; border-radius: 50%; border: 2px solid rgba(239, 68, 68, 0.45); animation: ring 1.2s ease-out infinite; }
+@keyframes ring { from { transform: scale(0.85); opacity: 1; } to { transform: scale(1.35); opacity: 0; } }
+.composer.is-recording { padding-left: 8px; background: rgba(255, 255, 255, 0.82); }
+.rec { position: relative; flex: 1; display: flex; align-items: center; gap: 10px; min-height: 42px; }
+.rec-cancel { width: 34px; height: 34px; background: rgba(15, 18, 34, 0.06); color: var(--ink-2); }
+.wave { flex: 1; height: 30px; display: flex; align-items: center; gap: 3px; overflow: hidden; }
+.wave-bar { flex: 1; height: 100%; border-radius: 99px; background: linear-gradient(180deg, #a78bfa, #60a5fa); transform-origin: center; min-width: 2px; }
+.rec-time { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--danger); min-width: 34px; }
+.rec-progress { position: absolute; left: 0; right: 0; bottom: -8px; height: 2px; border-radius: 2px; background: var(--danger); transform-origin: left; opacity: 0.5; }
+@media (prefers-reduced-motion: reduce) { .stop-ring { animation: none; } }

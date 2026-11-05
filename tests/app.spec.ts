@@ -298,3 +298,67 @@ test.describe("認証と同期", () => {
     expect(after.tasks[0].title).toBe("Aのタスク");
   });
 });
+
+test.describe("音声入力", () => {
+  test("ログイン前はマイクが出ず、ログイン後は空欄のときだけマイクが出る", async ({ page }) => {
+    await page.goto("/");
+    await expect(page.getByRole("tablist")).toBeVisible();
+    await expect(page.getByTestId("voice")).toHaveCount(0);
+
+    await login(page);
+    await expect(page.getByTestId("voice")).toBeVisible();
+    await page.getByTestId("memo").fill("文字を打つと");
+    await expect(page.getByTestId("voice")).toHaveCount(0);
+    await expect(page.getByTestId("send")).toBeEnabled();
+    await page.getByTestId("memo").fill("");
+    await expect(page.getByTestId("voice")).toBeVisible();
+  });
+
+  test("話して止めると、書き起こしがタスクに分かれて追加される", async ({ page }) => {
+    await login(page);
+    await page.getByTestId("voice").click();
+    const rec = page.getByTestId("recording");
+    await expect(rec).toBeVisible();
+    await expect(page.getByTestId("memo")).toBeHidden();
+    await expect(rec.locator(".wave-bar")).toHaveCount(24);
+    await expect(page.getByTestId("rec-time")).toHaveText("0:01", { timeout: 4000 });
+
+    const resp = page.waitForResponse((r) => r.url().endsWith("/api/ai/voice"));
+    await page.getByTestId("voice-stop").click();
+    const r = await resp;
+    expect(r.request().headers()["content-type"]).toMatch(/^audio\//);
+    // サーバーは 200 バイト未満の音声を 400 で弾くので、200 なら実際の録音が届いている
+    expect(r.status()).toBe(200);
+    expect((await r.json()).text.length).toBeGreaterThan(0);
+
+    await expect(task(page, "牛乳を買う")).toBeVisible();
+    await expect(task(page, "レポートを提出する")).toBeVisible();
+    await expect(page.getByTestId("count-todo")).toHaveText("2");
+    await expect(rec).toBeHidden();
+    await expect(page.getByTestId("memo")).toBeVisible();
+  });
+
+  test("×で録音をやめると何も追加されない", async ({ page }) => {
+    await login(page);
+    let posted = false;
+    page.on("request", (r) => r.url().endsWith("/api/ai/voice") && (posted = true));
+    await page.getByTestId("voice").click();
+    await expect(page.getByTestId("recording")).toBeVisible();
+    await page.waitForTimeout(600);
+    await page.getByTestId("voice-cancel").click();
+    await expect(page.getByTestId("recording")).toBeHidden();
+    await expect(page.getByTestId("voice")).toBeVisible();
+    await page.waitForTimeout(500);
+    expect(posted).toBe(false);
+    await expect(page.getByTestId("count-todo")).toHaveText("0");
+  });
+
+  test("音声APIは音声以外や未ログインを拒否する", async ({ page, playwright }) => {
+    const anon = await playwright.request.newContext({ baseURL: "http://localhost:5173" });
+    expect((await anon.post("/api/ai/voice", { headers: { "Content-Type": "audio/webm" }, data: Buffer.alloc(1000) })).status()).toBe(401);
+    await anon.dispose();
+    await login(page);
+    expect((await page.request.post("/api/ai/voice", { headers: { "Content-Type": "text/plain" }, data: "hello" })).status()).toBe(415);
+  });
+});
+
