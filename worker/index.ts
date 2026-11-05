@@ -206,43 +206,91 @@ app.post("/api/ai/split", async (c) => {
     return c.json({ tasks, source: "local" });
   }
 
-  const res = (await c.env.AI.run(AI_MODEL as keyof AiModels, {
-    messages: [
-      {
-        role: "system",
-        content:
-          "あなたはタスク整理アシスタントです。ユーザーのメモを、すぐ着手できる具体的なタスクに分解します。" +
-          "各タスクは動詞で終わる日本語の短い文（30文字以内）。最大8件。重複・前置き・説明は禁止。" +
-          '出力は JSON のみ: {"tasks": ["...", "..."]}',
-      },
-      { role: "user", content: text },
-    ],
-    response_format: {
-      type: "json_schema",
-      json_schema: {
-        type: "object",
-        properties: { tasks: { type: "array", items: { type: "string" }, maxItems: 8 } },
-        required: ["tasks"],
-      },
-    },
-    max_tokens: 512,
-  } as never)) as { response?: unknown };
+  const system =
+    "あなたはタスク整理アシスタントです。ユーザーのメモを、すぐ着手できる具体的なタスクに分解します。" +
+    "各タスクは動詞で終わる日本語の短い文（30文字以内）。最大8件。重複・前置き・説明は禁止。" +
+    '出力は JSON のみ: {"tasks": ["...", "..."]}';
+  const messages = [
+    { role: "system", content: system },
+    { role: "user", content: text },
+  ];
 
-  let tasks: string[] = [];
-  const raw = res?.response;
+  let res: unknown;
   try {
-    const parsed = typeof raw === "string" ? JSON.parse(raw.replace(/^```(json)?|```$/g, "").trim()) : raw;
-    tasks = (parsed as { tasks?: unknown }).tasks as string[];
+    res = await c.env.AI.run(AI_MODEL as keyof AiModels, {
+      messages,
+      response_format: {
+        type: "json_schema",
+        json_schema: {
+          type: "object",
+          properties: { tasks: { type: "array", items: { type: "string" }, maxItems: 8 } },
+          required: ["tasks"],
+        },
+      },
+      max_tokens: 1024,
+    } as never);
   } catch {
-    tasks = [];
+    // JSON モード非対応時は通常生成で再試行
+    res = await c.env.AI.run(AI_MODEL as keyof AiModels, { messages, max_tokens: 1024 } as never);
   }
-  tasks = (Array.isArray(tasks) ? tasks : [])
-    .filter((t): t is string => typeof t === "string")
-    .map((t) => t.trim().slice(0, 200))
+
+  let tasks = extractTasks(res);
+  if (!tasks.length) {
+    console.log("ai/split: unparsed response", JSON.stringify(res).slice(0, 2000));
+  }
+  tasks = tasks
+    .map((t) => t.replace(/^[-*・\d.)\s]+/, "").trim().slice(0, 200))
     .filter(Boolean)
     .slice(0, 8);
-  return c.json({ tasks, source: "workers-ai" });
+  return c.json(tasks.length ? { tasks, source: "workers-ai" } : { tasks, source: "workers-ai", shape: describe(res) });
 });
+
+// モデルごとに返り値の形が異なる（response が文字列/オブジェクト、OpenAI互換の choices など）ので幅広く読む
+function extractTasks(res: unknown): string[] {
+  const candidates: unknown[] = [];
+  const r = res as Record<string, any> | null;
+  if (r && typeof r === "object") {
+    candidates.push(r.response, r.result?.response, r.choices?.[0]?.message?.content, r.choices?.[0]?.text, r.output_text, r);
+  } else candidates.push(res);
+
+  for (const c of candidates) {
+    const t = fromValue(c);
+    if (t.length) return t;
+  }
+  return [];
+}
+
+function fromValue(v: unknown): string[] {
+  if (v == null) return [];
+  if (Array.isArray(v)) return v.filter((x): x is string => typeof x === "string");
+  if (typeof v === "object") {
+    const t = (v as { tasks?: unknown }).tasks;
+    return Array.isArray(t) ? t.filter((x): x is string => typeof x === "string") : [];
+  }
+  if (typeof v !== "string") return [];
+  const s = v.replace(/```(?:json)?/g, "").trim();
+  // 本文中の最初の JSON オブジェクト／配列を拾う
+  for (const m of [s, s.match(/\{[\s\S]*\}/)?.[0], s.match(/\[[\s\S]*\]/)?.[0]]) {
+    if (!m) continue;
+    try {
+      const t = fromValue(JSON.parse(m));
+      if (t.length) return t;
+    } catch {
+      /* next */
+    }
+  }
+  // 最後の手段：箇条書きの行
+  const lines = s.split("\n").map((l) => l.trim()).filter((l) => /^([-*・]|\d+[.)])\s*/.test(l));
+  return lines;
+}
+
+function describe(v: unknown, depth = 0): unknown {
+  if (depth > 3) return typeof v;
+  if (Array.isArray(v)) return [v.length ? describe(v[0], depth + 1) : "empty"];
+  if (v && typeof v === "object") return Object.fromEntries(Object.entries(v).slice(0, 12).map(([k, x]) => [k, describe(x, depth + 1)]));
+  if (typeof v === "string") return `string(${v.length}):${v.slice(0, 80)}`;
+  return typeof v;
+}
 
 app.all("/api/*", (c) => c.json({ error: "not found" }, 404));
 
