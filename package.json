@@ -1,0 +1,38 @@
+{
+  "name": "flick-tasks",
+  "version": "1.0.0",
+  "description": "",
+  "scripts": {
+    "dev": "CLOUDFLARE_ENV=dev vite",
+    "build": "vite build",
+    "build:dev": "CLOUDFLARE_ENV=dev vite build",
+    "preview": "vite preview",
+    "typecheck": "tsc",
+    "db:migrate:local": "wrangler d1 migrations apply DB --local --env dev",
+    "db:migrate:remote": "wrangler d1 migrations apply DB --remote",
+    "test:e2e": "playwright test",
+    "deploy": "node scripts/ensure-d1.mjs && wrangler d1 migrations apply DB --remote && npm run build && wrangler deploy"
+  },
+  "license": "ISC",
+  "dependencies": {
+    "arctic": "^3.7.0",
+    "hono": "^4.13.16",
+    "motion": "^14.9.1",
+    "react": "^19.3.1",
+    "react-dom": "^19.3.1"
+  },
+  "devDependencies": {
+    "@cloudflare/vite-plugin": "^1.67.0",
+    "@cloudflare/workers-types": "^5.20261104.1",
+    "@playwright/test": "^1.64.1",
+    "@types/react": "^19.3.0",
+    "@types/react-dom": "^19.3.0",
+    "@vitejs/plugin-react": "^6.2.1",
+    "typescript": "^7.0.2",
+    "vite": "^8.3.6",
+    "vite-plugin-pwa": "^2.0.0",
+    "wrangler": "^4.158.0"
+  },
+  "private": true,
+  "type": "module"
+}
