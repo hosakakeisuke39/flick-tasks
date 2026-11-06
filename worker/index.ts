@@ -198,14 +198,16 @@ app.post("/api/tasks/sync", async (c) => {
 // 区切り（改行・読点・「と」「あと」など）で素朴に分ける。AI が使えないときの予備
 function localSplit(text: string): string[] {
   return text
-    .split(/\n|、|。|,|・|あと|それから|(?<=[^\sと]{2,})と(?=[^\sと]{2,})/)
-    .map((s) => s.trim())
+    .split(/\n|、|。|,|・/)
+    .map((s) => s.replace(/^(あと|それから|えーと|えー|あの)\s*/, "").trim())
     .filter(Boolean)
     .slice(0, 8);
 }
 
 // AI: 走り書きのメモを実行可能なタスクに分解
+let lastFailure: unknown = null;
 async function splitText(env: Env, text: string): Promise<string[]> {
+  lastFailure = null;
   if (!env.AI) {
     // ローカル（AIバインディングなし）時のフォールバック：区切り文字で分割
     return localSplit(text);
@@ -241,14 +243,14 @@ async function splitText(env: Env, text: string): Promise<string[]> {
   };
   let res: unknown;
   try {
-    res = await env.AI.run(AI_MODEL as keyof AiModels, { messages, response_format: schema, max_tokens: 512, temperature: 0.2 } as never);
+    res = await env.AI.run(AI_MODEL as keyof AiModels, { messages, response_format: schema, max_tokens: 2048, temperature: 0.2 } as never);
   } catch {
     res = null;
   }
   // JSON モードで空・失敗なら通常生成でもう一度
   if (!extractTasks(res).length) {
     try {
-      res = await env.AI.run(AI_MODEL as keyof AiModels, { messages, max_tokens: 512, temperature: 0.2 } as never);
+      res = await env.AI.run(AI_MODEL as keyof AiModels, { messages, max_tokens: 2048, temperature: 0.2 } as never);
     } catch {
       res = null;
     }
@@ -257,6 +259,7 @@ async function splitText(env: Env, text: string): Promise<string[]> {
   let tasks = extractTasks(res);
   if (!tasks.length) {
     console.log("ai/split: unparsed response", JSON.stringify(res).slice(0, 2000));
+    lastFailure = describe(res);
     tasks = localSplit(text); // AI が答えられなくても区切りで分けて返す
   }
   return tasks
@@ -270,7 +273,7 @@ app.post("/api/ai/split", async (c) => {
   const text = body?.text?.trim();
   if (!text || text.length > 2000) return c.json({ error: "bad request" }, 400);
   const tasks = await splitText(c.env, text);
-  return c.json({ tasks, source: c.env.AI ? "workers-ai" : "local" });
+  return c.json(lastFailure ? { tasks, source: "fallback", debug: lastFailure } : { tasks, source: c.env.AI ? "workers-ai" : "local" });
 });
 
 // AI: 録音した音声 → Whisper で書き起こし → タスクに分解
