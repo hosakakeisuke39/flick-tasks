@@ -319,3 +319,7 @@ button { background: none; border: 0; padding: 0; cursor: pointer; }
 .rec-time { font-size: 13px; font-weight: 700; font-variant-numeric: tabular-nums; color: var(--danger); min-width: 34px; }
 .rec-progress { position: absolute; left: 0; right: 0; bottom: -8px; height: 2px; border-radius: 2px; background: var(--danger); transform-origin: left; opacity: 0.5; }
 @media (prefers-reduced-motion: reduce) { .stop-ring { animation: none; } }
+
+.toast { max-width: calc(100vw - 32px); }
+.toast > span:first-child { line-height: 1.4; padding: 2px 0; }
+.toast:not(:has(.toast-undo)) { border-radius: 20px; padding: 12px 18px; }

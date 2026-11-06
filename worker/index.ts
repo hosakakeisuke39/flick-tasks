@@ -261,12 +261,17 @@ app.post("/api/ai/voice", async (c) => {
     // ローカル開発・E2E 用の固定書き起こし
     text = "牛乳を買う、レポートを提出する";
   } else {
-    const out = (await c.env.AI.run(WHISPER_MODEL as keyof AiModels, {
-      audio: toBase64(buf),
-      language: "ja",
-      vad_filter: true,
-    } as never)) as { text?: string };
-    text = (out?.text ?? "").trim();
+    try {
+      const out = (await c.env.AI.run(WHISPER_MODEL as keyof AiModels, {
+        audio: toBase64(buf),
+        language: "ja",
+        vad_filter: true,
+      } as never)) as { text?: string };
+      text = (out?.text ?? "").trim();
+    } catch (e) {
+      console.log("ai/voice: whisper failed", type, buf.byteLength, String(e));
+      return c.json({ error: "transcription failed" }, 502);
+    }
   }
   if (!text) return c.json({ text: "", tasks: [] });
   const tasks = await splitText(c.env, text.slice(0, 2000));

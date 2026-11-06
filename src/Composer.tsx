@@ -1,9 +1,9 @@
 import { useCallback, useEffect, useRef, useState } from "react";
 import { AnimatePresence, motion, useAnimate } from "motion/react";
 import { aiSplit, useStore } from "./store";
-import { MAX_SECONDS, sendVoice, useRecorder, voiceSupported } from "./voice";
+import { MAX_SECONDS, sendVoice, useRecorder, voiceErrorMessage, voiceSupported } from "./voice";
 
-export function Composer({ onCreate }: { onCreate: (titles: string[]) => void }) {
+export function Composer({ onCreate, onNotice }: { onCreate: (titles: string[]) => void; onNotice: (text: string) => void }) {
   const [text, setText] = useState("");
   const [busy, setBusy] = useState(false);
   const [scope, animateEl] = useAnimate<HTMLFormElement>();
@@ -21,25 +21,38 @@ export function Composer({ onCreate }: { onCreate: (titles: string[]) => void })
         if (tasks.length) {
           onCreate(tasks);
           navigator.vibrate?.(14);
-        } else shake();
-      } catch {
+        } else {
+          shake();
+          onNotice(voiceErrorMessage({ name: "VoiceEmpty" }));
+        }
+      } catch (e) {
         shake();
+        onNotice(voiceErrorMessage(e));
       } finally {
         setBusy(false);
       }
     },
     // eslint-disable-next-line react-hooks/exhaustive-deps
-    [onCreate]
+    [onCreate, onNotice]
   );
-  const recorder = useRecorder(onAudio);
+  const onRecError = useCallback(
+    (e: unknown) => {
+      shake();
+      onNotice(voiceErrorMessage(e));
+    },
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+    [onNotice]
+  );
+  const recorder = useRecorder(onAudio, onRecError);
   const recording = recorder.state === "recording";
 
   const startVoice = async () => {
     try {
       await recorder.start();
       navigator.vibrate?.(10);
-    } catch {
-      shake(); // マイク拒否など
+    } catch (e) {
+      shake();
+      onNotice(voiceErrorMessage(e));
     }
   };
 
@@ -205,7 +218,7 @@ export function Composer({ onCreate }: { onCreate: (titles: string[]) => void })
             className="icon-btn mic-btn"
             data-testid="voice"
             aria-label="音声でタスクを追加"
-            disabled={busy}
+            disabled={busy || recorder.state === "starting"}
             onClick={startVoice}
             initial={{ scale: 0.4, opacity: 0, rotate: -30 }}
             animate={{ scale: 1, opacity: 1, rotate: 0 }}

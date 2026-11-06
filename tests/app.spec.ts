@@ -326,7 +326,8 @@ test.describe("音声入力", () => {
     const resp = page.waitForResponse((r) => r.url().endsWith("/api/ai/voice"));
     await page.getByTestId("voice-stop").click();
     const r = await resp;
-    expect(r.request().headers()["content-type"]).toMatch(/^audio\//);
+    // 端末差をなくすため送信前に WAV へ変換している
+    expect(r.request().headers()["content-type"]).toBe("audio/wav");
     // サーバーは 200 バイト未満の音声を 400 で弾くので、200 なら実際の録音が届いている
     expect(r.status()).toBe(200);
     expect((await r.json()).text.length).toBeGreaterThan(0);
@@ -360,5 +361,47 @@ test.describe("音声入力", () => {
     await login(page);
     expect((await page.request.post("/api/ai/voice", { headers: { "Content-Type": "text/plain" }, data: "hello" })).status()).toBe(415);
   });
-});
 
+  test("マイクが拒否されたら理由がトーストで表示される", async ({ page }) => {
+    await page.addInitScript(() => {
+      navigator.mediaDevices.getUserMedia = () => Promise.reject(new DOMException("denied", "NotAllowedError"));
+    });
+    await login(page);
+    await page.getByTestId("voice").click();
+    await expect(page.getByTestId("toast")).toContainText("マイクが許可されていません");
+    await expect(page.getByTestId("recording")).toHaveCount(0);
+  });
+
+  test("録音形式の指定に失敗する端末でも録音できる", async ({ page }) => {
+    await page.addInitScript(() => {
+      const Orig = window.MediaRecorder;
+      // Safari の一部の版のように、mimeType 付きの生成と timeslice 付き start が失敗する端末を再現
+      class Picky extends Orig {
+        constructor(stream: MediaStream, opts?: MediaRecorderOptions) {
+          if (opts?.mimeType) throw new DOMException("unsupported", "NotSupportedError");
+          super(stream);
+        }
+        start(timeslice?: number) {
+          if (timeslice !== undefined) throw new DOMException("timeslice", "NotSupportedError");
+          super.start();
+        }
+      }
+      window.MediaRecorder = Picky as unknown as typeof MediaRecorder;
+    });
+    await login(page);
+    await page.getByTestId("voice").click();
+    await expect(page.getByTestId("recording")).toBeVisible();
+    await page.waitForTimeout(1200);
+    await page.getByTestId("voice-stop").click();
+    await expect(task(page, "牛乳を買う")).toBeVisible();
+  });
+
+  test("書き起こしに失敗したら理由が表示される", async ({ page }) => {
+    await login(page);
+    await page.route("**/api/ai/voice", (r) => r.fulfill({ status: 502, body: "{}" }));
+    await page.getByTestId("voice").click();
+    await page.waitForTimeout(800);
+    await page.getByTestId("voice-stop").click();
+    await expect(page.getByTestId("toast")).toContainText("書き起こしに失敗しました");
+  });
+});

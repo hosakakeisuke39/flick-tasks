@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { AnimatePresence, LayoutGroup, motion, MotionConfig } from "motion/react";
 import { actions, boot, STATUSES, STATUS_LABEL, useStore, visibleTasks, type Status, type Task } from "./store";
 import { TaskCard } from "./TaskCard";
@@ -47,6 +47,7 @@ export function App() {
     navigator.vibrate?.([8, 40, 8]);
     setToast({ id: Date.now(), text: "削除", undo: () => actions.restore(task) });
   };
+  const notice = useCallback((text: string) => setToast({ id: Date.now(), text }), []);
   const onCreate = (titles: string[]) => {
     actions.add(titles);
     if (tab !== "todo") switchTab("todo");
@@ -139,7 +140,7 @@ export function App() {
           )}
         </AnimatePresence>
 
-        <Composer onCreate={onCreate} />
+        <Composer onCreate={onCreate} onNotice={notice} />
         <Toast data={toast} onDone={() => setToast(null)} />
       </div>
     </MotionConfig>
