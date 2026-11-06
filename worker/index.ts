@@ -195,44 +195,70 @@ app.post("/api/tasks/sync", async (c) => {
   return c.json({ ok: true, applied: stmts.length });
 });
 
+// 区切り（改行・読点・「と」「あと」など）で素朴に分ける。AI が使えないときの予備
+function localSplit(text: string): string[] {
+  return text
+    .split(/\n|、|。|,|・|あと|それから|(?<=[^\sと]{2,})と(?=[^\sと]{2,})/)
+    .map((s) => s.trim())
+    .filter(Boolean)
+    .slice(0, 8);
+}
+
 // AI: 走り書きのメモを実行可能なタスクに分解
 async function splitText(env: Env, text: string): Promise<string[]> {
   if (!env.AI) {
     // ローカル（AIバインディングなし）時のフォールバック：区切り文字で分割
-    return text.split(/\n|、|。|,|・|と(?=.{2,})/).map((s) => s.trim()).filter(Boolean).slice(0, 8);
+    return localSplit(text);
   }
 
-  const system =
-    "あなたはタスク整理アシスタントです。ユーザーのメモを、すぐ着手できる具体的なタスクに分解します。" +
-    "各タスクは動詞で終わる日本語の短い文（30文字以内）。最大8件。重複・前置き・説明は禁止。" +
-    "音声の書き起こしの場合は、言い淀みやフィラー（えー、あの等）は無視します。" +
-    '出力は JSON のみ: {"tasks": ["...", "..."]}';
-  const messages = [
-    { role: "system", content: system },
-    { role: "user", content: text },
+  const system = [
+    "あなたはタスク管理アプリのメモ整理係です。ユーザーのメモ（音声の書き起こしのことも多い）を、ユーザーが挙げた用事ごとのタスクに分けます。",
+    "ルール:",
+    "1. ユーザーが挙げた用事1つにつきタスク1つ。手順への細分化や、言われていない作業の追加は絶対にしない。",
+    "2. 「と」「、」「あと」「それから」などでつながった別々の用事は分ける。用事が1つならタスクも1つ。",
+    "3. 各タスクは「〜を〜する」の形の短い日本語（30文字以内）にする。例: 「鏡の交換」→「鏡を交換する」。",
+    "4. 音声認識の聞き間違い（同音・似た音の誤変換）は文脈から正しい語に直す。例: 和婚/エア婚→エアコン、公開→航海/後悔 など文脈で判断。",
+    "5. 「えー」「あの」などのフィラーや言い直しは無視する。",
+    '出力は JSON のみ: {"tasks": ["...", "..."]}',
+  ].join("\n");
+  const examples = [
+    { role: "user", content: "鏡の交換と和婚フィルターの掃除" },
+    { role: "assistant", content: '{"tasks":["鏡を交換する","エアコンのフィルターを掃除する"]}' },
+    { role: "user", content: "えーと明日までにレポート出して、帰りに牛乳買って、あと教授にメール" },
+    { role: "assistant", content: '{"tasks":["レポートを提出する","帰りに牛乳を買う","教授にメールを送る"]}' },
+    { role: "user", content: "来週の発表のスライド作り" },
+    { role: "assistant", content: '{"tasks":["来週の発表のスライドを作る"]}' },
   ];
+  const messages = [{ role: "system", content: system }, ...examples, { role: "user", content: text }];
 
+  const schema = {
+    type: "json_schema",
+    json_schema: {
+      type: "object",
+      properties: { tasks: { type: "array", items: { type: "string" }, maxItems: 8 } },
+      required: ["tasks"],
+    },
+  };
   let res: unknown;
   try {
-    res = await env.AI.run(AI_MODEL as keyof AiModels, {
-      messages,
-      response_format: {
-        type: "json_schema",
-        json_schema: {
-          type: "object",
-          properties: { tasks: { type: "array", items: { type: "string" }, maxItems: 8 } },
-          required: ["tasks"],
-        },
-      },
-      max_tokens: 1024,
-    } as never);
+    res = await env.AI.run(AI_MODEL as keyof AiModels, { messages, response_format: schema, max_tokens: 512, temperature: 0.2 } as never);
   } catch {
-    // JSON モード非対応時は通常生成で再試行
-    res = await env.AI.run(AI_MODEL as keyof AiModels, { messages, max_tokens: 1024 } as never);
+    res = null;
+  }
+  // JSON モードで空・失敗なら通常生成でもう一度
+  if (!extractTasks(res).length) {
+    try {
+      res = await env.AI.run(AI_MODEL as keyof AiModels, { messages, max_tokens: 512, temperature: 0.2 } as never);
+    } catch {
+      res = null;
+    }
   }
 
-  const tasks = extractTasks(res);
-  if (!tasks.length) console.log("ai/split: unparsed response", JSON.stringify(res).slice(0, 2000));
+  let tasks = extractTasks(res);
+  if (!tasks.length) {
+    console.log("ai/split: unparsed response", JSON.stringify(res).slice(0, 2000));
+    tasks = localSplit(text); // AI が答えられなくても区切りで分けて返す
+  }
   return tasks
     .map((t) => t.replace(/^[-*・\d.)\s]+/, "").trim().slice(0, 200))
     .filter(Boolean)
@@ -266,6 +292,8 @@ app.post("/api/ai/voice", async (c) => {
         audio: toBase64(buf),
         language: "ja",
         vad_filter: true,
+        // 語彙のヒント（家事・買い物・学業などのタスクの語を正しく変換しやすくする）
+        initial_prompt: "やることメモ。エアコンのフィルター掃除、鏡の交換、洗濯、買い物、レポート提出、ゼミ、教授にメール、予約、支払い。",
       } as never)) as { text?: string };
       text = (out?.text ?? "").trim();
     } catch (e) {
